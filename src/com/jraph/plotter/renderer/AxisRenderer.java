@@ -1,0 +1,265 @@
+package com.jraph.plotter.renderer;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.text.DecimalFormat;
+import java.text.NumberFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import com.jraph.plotter.components.axis.Axis;
+import com.jraph.plotter.components.axis.AxisOrientation;
+import com.jraph.plotter.helper.CoordsTransformer;
+import com.jraph.plotter.helper.XCoordsTransformer;
+import com.jraph.plotter.helper.YCoordsTransformer;
+import com.jraph.plotter.props.Inset;
+import com.jraph.plotter.props.Range;
+import com.jraph.svg.Element;
+import com.jraph.svg.elements.Line;
+import com.jraph.svg.elements.Text;
+import com.jraph.svg.utils.Stroke;
+import com.jraph.svg.utils.Vector2;
+
+public class AxisRenderer {
+	private static final AxisRenderer _instance = new AxisRenderer();
+
+	public static AxisRenderer getInstance() {
+		return _instance;
+	}
+
+	private static double EPS = 1e-6;
+
+	private NumberFormat numberFormatHelper;
+
+	private AxisRenderer() {
+		numberFormatHelper = DecimalFormat.getInstance();
+		numberFormatHelper.setMinimumFractionDigits(0);
+		numberFormatHelper.setMaximumFractionDigits(2);
+		numberFormatHelper.setRoundingMode(RoundingMode.HALF_UP);
+	}
+
+	public List<Element> render(Axis axis) {
+		if (axis == null) {
+			return Collections.emptyList();
+		}
+
+		return renderAxis(axis.getPad().getDimension(), axis.getPad().getMargin(), axis, axis.getAxisOrientation());
+	}
+
+	private List<Element> renderAxis(Vector2<Integer> theSize, Inset theMargin, Axis axis, AxisOrientation direction) {
+		int yTop = (int) (0 + theMargin.getTop());
+		int yBottom = (int) (theSize.getY() - theMargin.getBottom());
+		int xLeft = (int) (0 + theMargin.getLeft());
+		int xRight = (int) (theSize.getX() - theMargin.getRight());
+
+		switch (direction) {
+		case HORIZONTAL_TOP:
+			return renderTopAxis(yTop, xLeft, xRight, axis);
+		case HORIZONTAL_BOTTOM:
+			return renderBottomAxis(yBottom, xLeft, xRight, axis);
+		case VERTICAL_LEFT:
+			return renderLeftAxis(xLeft, yBottom, yTop, axis);
+		case VERTICAL_RIGHT:
+			return renderRightAxis(xRight, yBottom, yTop, axis);
+		default:
+			return Collections.emptyList(); // should never happen, throw
+											// exception?
+		}
+	}
+
+	private List<Element> renderLeftAxis(int x, int yStart, int yStop, Axis axis) {
+		return renderVerticalAxis(x, yStart, yStop, axis, 1);
+	}
+
+	private List<Element> renderRightAxis(int x, int yStart, int yStop, Axis axis) {
+		return renderVerticalAxis(x, yStart, yStop, axis, -1);
+	}
+
+	private List<Element> renderTopAxis(int y, int xStart, int xStop, Axis axis) {
+		return renderHorizontalAxis(y, xStart, xStop, axis, -1);
+	}
+
+	private List<Element> renderBottomAxis(int y, int xStart, int xStop, Axis axis) {
+		return renderHorizontalAxis(y, xStart, xStop, axis, 1);
+	}
+
+	// TODO: There's still a lot of duplicated code
+	// only difference is the CoordsTransformer
+	// and the actual tick
+	// probably also the text (positioning) later on
+
+	private List<Element> renderHorizontalAxis(int y, int xStart, int xStop, Axis axis, int inwardDir) {
+		List<Element> result = new ArrayList<Element>();
+
+		Range range = axis.getRange();
+		if (range.getLength() == 0) {
+			return Collections.emptyList();
+		}
+
+		Stroke stroke = axis.getStroke();
+		if (stroke.isVisible()) {
+			Line line = new Line(new Vector2<Double>((double) xStart, (double) y),
+					new Vector2<Double>((double) xStop, (double) y));
+			line.setStroke(stroke);
+
+			result.add(line);
+		}
+
+		int minorTickNum = axis.getSubTicks();
+
+		BigDecimal majorTick = axis.getMajorTickUnit();
+		BigDecimal minorTick = majorTick.divide(new BigDecimal(minorTickNum + 1), 20, RoundingMode.HALF_DOWN);
+
+		BigDecimal min = new BigDecimal(range.getMin());
+		BigDecimal max = new BigDecimal(range.getMax());
+
+		BigDecimal firstMinor = minorTick.multiply(min.divideToIntegralValue(minorTick));
+
+		CoordsTransformer transformer = new XCoordsTransformer(range, new Range(xStart, xStop), axis.isLog());
+
+		int totalSubs = min.divideToIntegralValue(minorTick).intValue();
+		for (BigDecimal x = firstMinor; x.compareTo(max) <= 0; x = x.add(minorTick), totalSubs++) {
+			if (x.doubleValue() < min.doubleValue()) {
+				continue;
+			}
+
+			double px = transformer.coordsToScreenPixel(x.doubleValue());
+
+			Line tick;
+
+			boolean isMajor = totalSubs % (minorTickNum + 1) == 0;
+			// boolean isMajor =
+			// x.remainder(majorTick).compareTo(BigDecimal.ZERO) == 0;
+			// boolean isMajor = n % (minorTickNum + 1) == 0; // for
+			// text
+			int tickSize = isMajor ? axis.getTickSize() : axis.getTickSize() / 2;
+
+			switch (axis.getAxisStyle()) {
+			case INWARD:
+				tick = new Line(new Vector2<Double>(px, (double) y),
+						new Vector2<Double>(px, (double) (y - inwardDir * tickSize)));
+				break;
+			case OUTWARD:
+				tick = new Line(new Vector2<Double>(px, (double) y),
+						new Vector2<Double>(px, (double) (y + inwardDir * tickSize)));
+				break;
+			case MIDDLE:
+				tick = new Line(new Vector2<Double>(px, (y - tickSize / 2.0)),
+						new Vector2<Double>(px, (y + tickSize / 2.0)));
+				break;
+			default:
+				tick = null;
+				break;
+			}
+
+			if (tick != null) {
+				result.add(tick);
+				if (isMajor && axis.isRenderLabels()) {
+					Text aText = new Text();
+					if (x.intValue() > 10) {
+						aText.setText(String.format("%3.0f", x));
+					} else {
+						aText.setText(numberFormatHelper.format(x));
+					}
+
+					aText.setTextSize(axis.getTickFontSize());
+					aText.getPosition().set(px,
+							(double) y + inwardDir * tickSize + 5 * inwardDir + inwardDir * axis.getShift());
+					result.add(aText);
+				}
+			}
+		}
+		if (axis.isIgnoreHighest()) {
+			result.remove(result.size() - 1);
+		}
+
+		return result;
+	}
+
+	private List<Element> renderVerticalAxis(int x, int yStart, int yStop, Axis axis, int inwardDir) {
+		List<Element> result = new ArrayList<Element>();
+
+		Range range = axis.getRange();
+
+		Stroke stroke = axis.getStroke();
+		if (stroke.isVisible()) {
+			Line line = new Line(new Vector2<Double>((double) x, (double) yStart),
+					new Vector2<Double>((double) x, (double) yStop));
+			line.setStroke(stroke);
+
+			result.add(line);
+		}
+
+		int minorTickNum = axis.getSubTicks();
+
+		BigDecimal majorTick = axis.getMajorTickUnit();
+		BigDecimal minorTick = majorTick.divide(new BigDecimal(minorTickNum + 1), 10, RoundingMode.HALF_DOWN);
+
+		BigDecimal min = new BigDecimal(range.getMin());
+		BigDecimal max = new BigDecimal(range.getMax());
+
+		BigDecimal firstMinor = minorTick.multiply(min.divideToIntegralValue(minorTick));
+		// invert the Y coordinates because they are not logical
+		CoordsTransformer transformer = new YCoordsTransformer(range, new Range(yStop, yStart), axis.isLog());
+
+		int totalSubs = min.divideToIntegralValue(minorTick).intValue();
+		for (BigDecimal y = firstMinor; y.compareTo(max) <= 0; y = y.add(minorTick), totalSubs++) {
+			if (y.doubleValue() < min.doubleValue()) {
+				continue;
+			}
+
+			double py = transformer.coordsToScreenPixel(y.doubleValue());
+
+			Line tick;
+			boolean isMajor = totalSubs % (minorTickNum + 1) == 0;
+			// boolean isMajor =
+			// y.remainder(majorTick).compareTo(BigDecimal.ZERO) == 0;
+			int tickSize = isMajor ? axis.getTickSize() : axis.getTickSize() / 2;
+
+			switch (axis.getAxisStyle()) {
+			case INWARD:
+				tick = new Line(new Vector2<Double>((double) x, py),
+						new Vector2<Double>((double) (x + inwardDir * tickSize), py));
+				break;
+			case OUTWARD:
+				tick = new Line(new Vector2<Double>((double) x, py),
+						new Vector2<Double>((double) (x - inwardDir * tickSize), py));
+				break;
+			case MIDDLE:
+				tick = new Line(new Vector2<Double>(x - tickSize / 2.0, py),
+						new Vector2<Double>(x + tickSize / 2.0, py));
+				break;
+			default:
+				tick = null;
+				break;
+			}
+
+			if (tick != null) {
+				result.add(tick);
+				if (isMajor && axis.isRenderLabels()) {
+					Text aText = new Text();
+					if (y.doubleValue() == 0.0) {
+						y = BigDecimal.ZERO;
+					}
+					if (y.doubleValue() > 1000) {
+						aText.setText(String.format("%2.0e", y));
+					} else if (Math.abs(y.doubleValue()) < 0.01 && y.doubleValue() != 0.0) {
+						aText.setText(String.format("%2.0e", y));
+					} else {
+						aText.setText(numberFormatHelper.format(y));
+					}
+					aText.setTextSize(axis.getTickFontSize());
+					aText.getPosition()
+							.set((double) x - inwardDir * tickSize - 10 * inwardDir - inwardDir * axis.getShift(), py);
+					result.add(aText);
+				}
+			}
+		}
+		if (axis.isIgnoreHighest()) {
+			result.remove(result.size() - 1);
+		}
+
+		return result;
+	}
+}
